@@ -1,13 +1,27 @@
 name: Build
 
-on: [push]
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - "**"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: write
 
 jobs:
   build_windows:
     runs-on: windows-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v5
 
       - name: Build binaryninja-core placeholder
         working-directory: ./ci/binaryninja-api
@@ -17,11 +31,9 @@ jobs:
           cmake --build build --config Release
 
       - name: Install stable toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-          profile: minimal
-          override: true
 
       - name: Build
         env:
@@ -29,8 +41,58 @@ jobs:
         run: cargo build --release
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v5
         with:
           name: themida-spotter-bn_win64
           path: target/release/*.dll
           retention-days: 3
+
+      - name: Upload DLL to existing release (release event)
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $dll = Get-ChildItem target/release/*.dll | Select-Object -First 1
+          if (-not $dll) {
+            throw "No DLL found in target/release"
+          }
+          gh release upload "${{ github.event.release.tag_name }}" "$($dll.FullName)" --clobber
+
+      - name: Create or update nightly prerelease with DLL (branch push)
+        if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "nightly"
+          $dll = Get-ChildItem target/release/*.dll | Select-Object -First 1
+          if (-not $dll) {
+            throw "No DLL found in target/release"
+          }
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag "$($dll.FullName)#themida_spotter_bn-nightly.dll" --clobber
+          } else {
+            gh release create $tag "$($dll.FullName)#themida_spotter_bn-nightly.dll" --title "nightly" --notes "Automated nightly build from main branch" --prerelease
+          }
+
+      - name: Create or update release with DLL (tag push)
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $dll = Get-ChildItem target/release/*.dll | Select-Object -First 1
+          if (-not $dll) {
+            throw "No DLL found in target/release"
+          }
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag "$($dll.FullName)" --clobber
+          } else {
+            gh release create $tag "$($dll.FullName)" --generate-notes --title $tag
+          }

@@ -3,14 +3,12 @@ mod themida;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use binaryninja::{
-    backgroundtask::BackgroundTask,
-    binaryview::{BinaryView, BinaryViewExt},
-    command::register,
+    background_task::BackgroundTask,
+    binary_view::{BinaryView, BinaryViewExt},
+    command::register_command,
     function::Function,
-    logger,
 };
 use log::{debug, info};
-use rayon::prelude::*;
 
 use themida::ThemidaSpotterCommand;
 
@@ -56,20 +54,10 @@ pub fn search_for_code_entries<
 ) {
     let view = view.to_owned();
     let _thread = std::thread::spawn(move || {
-        if let Ok(mut task) = BackgroundTask::new(
-            format!("({}) Initializing...", THEMIDA_SPOTTER_PLUGIN_NAME),
-            true,
-        ) {
-            search_for_code_entries_task(
-                view.as_ref(),
-                analyze_function,
-                target_sections,
-                &mut task,
-            );
-
-            task.set_progress_text("");
-            task.finish();
-        }
+        let task = BackgroundTask::new(&format!("({}) Initializing...", THEMIDA_SPOTTER_PLUGIN_NAME), true);
+        search_for_code_entries_task(view.as_ref(), analyze_function, target_sections, &task);
+        task.set_progress_text("");
+        task.finish();
     });
 }
 
@@ -79,83 +67,60 @@ fn search_for_code_entries_task<
     view: &BinaryView,
     analyze_function: F,
     target_sections: Vec<CodeEntryDestRange>,
-    task: &mut BackgroundTask,
+    task: &BackgroundTask,
 ) {
     info!("Searching for obfuscated code entry patterns...");
 
     let function_count = view.functions().len();
     debug!("Processing {} functions.", function_count);
     let current_progress = AtomicU64::new(1);
-    let code_entry_descriptions_opt = view
-        .functions()
-        .par_iter()
-        .try_fold(Vec::new, |mut acc: Vec<CodeEntryDescription>, func| {
-            // Cancel task if needed
-            if task.is_cancelled() {
-                return None;
-            }
+    let mut code_entry_descriptions = Vec::new();
 
-            if let Some(entry_desc) = analyze_function(view, func.as_ref(), &target_sections) {
-                acc.push(entry_desc);
-            }
-            // Update task's progress
-            task.set_progress_text(format!(
-                "({}) {} / {} functions processed",
-                THEMIDA_SPOTTER_PLUGIN_NAME,
-                current_progress.load(Ordering::Acquire),
-                function_count
-            ));
-            current_progress.fetch_add(1, Ordering::Acquire);
+    for func in view.functions().iter() {
+        if task.is_cancelled() {
+            info!("Operation was cancelled");
+            return;
+        }
 
-            Some(acc)
-        })
-        .try_reduce(
-            Vec::new,
-            |mut a: Vec<CodeEntryDescription>, mut b: Vec<CodeEntryDescription>| {
-                a.append(&mut b);
-                Some(a)
-            },
+        if let Some(entry_desc) = analyze_function(view, &func, &target_sections) {
+            code_entry_descriptions.push(entry_desc);
+        }
+
+        let progress_text = format!(
+            "({}) {} / {} functions processed",
+            THEMIDA_SPOTTER_PLUGIN_NAME,
+            current_progress.load(Ordering::Acquire),
+            function_count
         );
-
-    if let Some(code_entry_descriptions) = code_entry_descriptions_opt {
-        // Get or create tag type
-        let vm_entry_tag_type = view
-            .get_tag_type(THEMIDA_SPOTTER_TAG_NAME)
-            .unwrap_or_else(|| {
-                view.create_tag_type(THEMIDA_SPOTTER_TAG_NAME, THEMIDA_SPOTTER_TAG_ICON)
-            });
-
-        // Create tags for each obfuscated code entry found (if any)
-        code_entry_descriptions.iter().for_each(|code_entry_desc| {
-            view.add_tag(
-                code_entry_desc.rva(),
-                &vm_entry_tag_type,
-                code_entry_desc.type_name(),
-                false, // Won't be added to the undo buffer
-            );
-        });
-
-        info!(
-            "Found {} obfuscated code entry locations. Tags have been set at the corresponding addresses.",
-            code_entry_descriptions.len()
-        );
-    } else {
-        info!("Operation was cancelled");
+        task.set_progress_text(&progress_text);
+        current_progress.fetch_add(1, Ordering::Acquire);
     }
+
+    // Get or create tag type
+    let vm_entry_tag_type = view
+        .tag_type_by_name(THEMIDA_SPOTTER_TAG_NAME)
+        .unwrap_or_else(|| view.create_tag_type(THEMIDA_SPOTTER_TAG_NAME, THEMIDA_SPOTTER_TAG_ICON));
+
+    // Create tags for each obfuscated code entry found (if any)
+    for code_entry_desc in &code_entry_descriptions {
+        view.add_tag(code_entry_desc.rva(), &vm_entry_tag_type, code_entry_desc.type_name(), false);
+    }
+
+    info!(
+        "Found {} obfuscated code entry locations. Tags have been set at the corresponding addresses.",
+        code_entry_descriptions.len()
+    );
 }
 
 #[no_mangle]
 pub extern "C" fn UIPluginInit() -> bool {
-    if logger::init(log::LevelFilter::Info).is_err() {
-        return false;
-    }
-
-    register(
-        format!(
-            r"{}\Find obfuscated code entries (3.x)",
-            THEMIDA_SPOTTER_PLUGIN_NAME
-        ),
-        "Look for obfuscated code entry patterns generated by Themida 3.x".to_string(),
+    let command_name = format!(
+        r"{}\Find obfuscated code entries (3.x)",
+        THEMIDA_SPOTTER_PLUGIN_NAME
+    );
+    register_command(
+        &command_name,
+        "Look for obfuscated code entry patterns generated by Themida 3.x",
         ThemidaSpotterCommand {},
     );
 

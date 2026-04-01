@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(binaryninja-core)
 
-set(_triton_bn_binaryninja_git_tag "v4.1.5747-stable")
+set(_triton_bn_binaryninja_git_tag "stable/5.2.8722")
 
 include(FetchContent)
 FetchContent_Declare(binaryninjaapi

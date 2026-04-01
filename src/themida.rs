@@ -1,10 +1,12 @@
 use binaryninja::{
-    architecture::Architecture,
-    basicblock::BasicBlock,
-    binaryview::{BinaryView, BinaryViewExt},
+    basic_block::BasicBlock,
+    binary_view::{BinaryView, BinaryViewExt},
     command::Command,
+    low_level_il::block::LowLevelILBlock,
+    low_level_il::expression::{ExpressionHandler, LowLevelILExpressionKind},
+    low_level_il::function::{Finalized, NonSSA},
+    low_level_il::instruction::{InstructionHandler, LowLevelILInstructionKind},
     function::Function,
-    llil,
 };
 use log::debug;
 
@@ -14,22 +16,15 @@ pub struct ThemidaSpotterCommand;
 
 impl Command for ThemidaSpotterCommand {
     fn action(&self, view: &BinaryView) {
-        let target_sections = view
-            .sections()
-            .iter()
-            .filter(|section| {
-                let name = section.name();
-                // Note: Themida/WinLicense 3.x only
-                name.as_str() == ".boot"
-                    || name.as_str() == ".themida"
-                    || name.as_str() == ".winlice"
-                    || name.as_str() == ".vlizer"
-            })
-            .map(|section| CodeEntryDestRange {
-                start: section.start(),
-                end: section.end(),
-            })
-            .collect();
+        let mut target_sections: Vec<CodeEntryDestRange> = Vec::new();
+
+        for section in view.sections().iter() {
+            let name = section.name().to_string_lossy().into_owned();
+            // Note: Themida/WinLicense 3.x only
+            if name == ".boot" || name == ".themida" || name == ".winlice" || name == ".vlizer" {
+                target_sections.push(section.start()..section.end());
+            }
+        }
 
         search_for_code_entries(view, search_for_themida_code_entries, target_sections)
     }
@@ -44,7 +39,7 @@ fn search_for_themida_code_entries(
     func: &Function,
     themida_section_ranges: &[CodeEntryDestRange],
 ) -> Option<CodeEntryDescription> {
-    debug!("Processing '{}'", func.symbol().full_name());
+    debug!("Processing '{:?}'", func.symbol().full_name());
 
     // Check if we're in the correct section (i.e., out of Themida's sections)
     let func_addr = func.start();
@@ -61,8 +56,8 @@ fn search_for_themida_code_entries(
         // Check only the last instruction as we're looking for a JMP
         if let Some(llil_inst) = llil_bb.iter().last() {
             // Match `jmp imm` instruction
-            if let llil::InstrInfo::TailCall(op) = llil_inst.info() {
-                if let llil::ExprInfo::ConstPtr(const_operation) = op.target().info() {
+            if let LowLevelILInstructionKind::TailCall(op) = llil_inst.kind() {
+                if let LowLevelILExpressionKind::ConstPtr(const_operation) = op.target().kind() {
                     let jmp_destination = const_operation.value();
                     // Check if jmp destination is inside of Themida's section
                     if themida_section_ranges
@@ -73,7 +68,7 @@ fn search_for_themida_code_entries(
                         // We now need to figure out whether it's mutated or virtualized
                         if destination_is_vmenter(bv, jmp_destination) {
                             debug!(
-                                "Themida VMEnter detected at 0x{:x} ('{}')",
+                                "Themida VMEnter detected at 0x{:x} ('{:?}')",
                                 op.address(),
                                 func.symbol().full_name(),
                             );
@@ -82,7 +77,7 @@ fn search_for_themida_code_entries(
 
                         // Doesn't look virtualized, assume it's mutated
                         debug!(
-                            "Themida MUTEnter detected at 0x{:x} ('{}')",
+                            "Themida MUTEnter detected at 0x{:x} ('{:?}')",
                             op.address(),
                             func.symbol().full_name(),
                         );
@@ -116,17 +111,19 @@ fn destination_is_vmenter(bv: &BinaryView, destination_addr: u64) -> bool {
 ///
 /// This checks if the first instruction is `pushfd` and that the function exits
 /// with a `jmp [reg]` instruction.
-fn function_is_vm_enter<A: Architecture>(
-    function: &llil::Function<A, llil::Finalized, llil::NonSSA<llil::RegularNonSSA>>,
-) -> bool {
+fn function_is_vm_enter(function: &binaryninja::low_level_il::LowLevelILRegularFunction) -> bool {
     if let Some(first_block) = function.basic_blocks().iter().next() {
+        let first_block: &BasicBlock<LowLevelILBlock<'_, Finalized, NonSSA>> = first_block.as_ref();
         // Check if first block looks like the start of a VMEnter and one basic
         // block looks like the end of a VMEnter
-        if block_is_vmenter_start(first_block.as_ref())
+        if block_is_vmenter_start(first_block)
             && function
                 .basic_blocks()
                 .iter()
-                .any(|block| block_is_vmenter_end(block.as_ref()))
+                .any(|block| {
+                    let block: &BasicBlock<LowLevelILBlock<'_, Finalized, NonSSA>> = block.as_ref();
+                    block_is_vmenter_end(block)
+                })
         {
             return true;
         }
@@ -138,9 +135,7 @@ fn function_is_vm_enter<A: Architecture>(
 /// Return `true` if the given basic block looks like the first basic block of
 /// a VMEnter routine (i.e., starts with a `pushfd` instruction).
 /// Return `false` otherwise.
-fn block_is_vmenter_start<A: Architecture>(
-    block: &BasicBlock<llil::LowLevelBlock<A, llil::Finalized, llil::NonSSA<llil::RegularNonSSA>>>,
-) -> bool {
+fn block_is_vmenter_start(block: &BasicBlock<LowLevelILBlock<'_, Finalized, NonSSA>>) -> bool {
     if let Some(first_inst) = block.iter().next() {
         // Match a `pushfd` instruction (VMEnter)
         if instruction_is_pushfd(&first_inst) {
@@ -153,13 +148,11 @@ fn block_is_vmenter_start<A: Architecture>(
 
 /// Return `true` if the given LLIL instruction corresponds to a `pushfd` instruction.
 /// Return `false` otherwise.
-fn instruction_is_pushfd<A: Architecture>(
-    instruction: &llil::Instruction<'_, A, llil::Finalized, llil::NonSSA<llil::RegularNonSSA>>,
-) -> bool {
+fn instruction_is_pushfd(instruction: &binaryninja::low_level_il::LowLevelILRegularInstruction<'_>) -> bool {
     // LLIL instruction should be a push
-    if let llil::InstrInfo::Push(op) = instruction.info() {
+    if let LowLevelILInstructionKind::Push(op) = instruction.kind() {
         // Operand should be a `or` (with many flags)
-        if let llil::ExprInfo::Or(_) = op.operand().info() {
+        if let LowLevelILExpressionKind::Or(_) = op.operand().kind() {
             return true;
         }
     }
@@ -170,14 +163,12 @@ fn instruction_is_pushfd<A: Architecture>(
 /// Return `true` if the given basic block looks like the final basic block of
 /// a VMEnter routine (i.e., ends with a `jmp [reg]` instruction).
 /// Return `false` otherwise.
-fn block_is_vmenter_end<A: Architecture>(
-    block: &BasicBlock<llil::LowLevelBlock<A, llil::Finalized, llil::NonSSA<llil::RegularNonSSA>>>,
-) -> bool {
+fn block_is_vmenter_end(block: &BasicBlock<LowLevelILBlock<'_, Finalized, NonSSA>>) -> bool {
     // Check if last instruction is `jmp [rax/eax]`
     if let Some(last_ins) = block.iter().last() {
-        if let llil::InstrInfo::Jump(jmp_operation) = last_ins.info() {
-            if let llil::ExprInfo::Load(load_operation) = jmp_operation.target().info() {
-                if let llil::ExprInfo::Reg(_) = load_operation.source_mem_expr().info() {
+        if let LowLevelILInstructionKind::Jump(jmp_operation) = last_ins.kind() {
+            if let LowLevelILExpressionKind::Load(load_operation) = jmp_operation.target().kind() {
+                if let LowLevelILExpressionKind::Reg(_) = load_operation.source_expr().kind() {
                     return true;
                 }
             }
