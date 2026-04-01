@@ -59,23 +59,31 @@ jobs:
           }
           gh release upload "${{ github.event.release.tag_name }}" "$($dll.FullName)" --clobber
 
-      - name: Create or update nightly prerelease with DLL (branch push)
+      - name: Create or update latest release with DLL (branch push)
         if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "nightly"
+          $tag = "latest"
           $dll = Get-ChildItem target/release/*.dll | Select-Object -First 1
           if (-not $dll) {
             throw "No DLL found in target/release"
           }
 
+          $range = "${{ github.event.before }}..${{ github.sha }}"
+          $commitLines = git log --pretty=format:"- %h %s (%an)" $range
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commitLines)) {
+            $commitLines = git log -n 20 --pretty=format:"- %h %s (%an)"
+          }
+          $notes = "Automated latest build from ${{ github.ref_name }}.`n`nRecent commits:`n$commitLines"
+
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag "$($dll.FullName)#themida_spotter_bn-nightly.dll" --clobber
+            gh release upload $tag "$($dll.FullName)#themida_spotter_bn-latest.dll" --clobber
+            gh release edit $tag --title "latest" --notes "$notes" --latest
           } else {
-            gh release create $tag "$($dll.FullName)#themida_spotter_bn-nightly.dll" --title "nightly" --notes "Automated nightly build from main branch" --prerelease
+            gh release create $tag "$($dll.FullName)#themida_spotter_bn-latest.dll" --title "latest" --notes "$notes" --latest
           }
 
       - name: Create or update release with DLL (tag push)
