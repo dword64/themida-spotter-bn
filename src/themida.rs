@@ -1,6 +1,6 @@
 use binaryninja::{
     basic_block::BasicBlock,
-    binary_view::{BinaryView, BinaryViewExt},
+    binary_view::BinaryView,
     command::Command,
     low_level_il::block::LowLevelILBlock,
     low_level_il::expression::{ExpressionHandler, LowLevelILExpressionKind},

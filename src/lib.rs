@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use binaryninja::{
     background_task::BackgroundTask,
-    binary_view::{BinaryView, BinaryViewExt},
+    binary_view::BinaryView,
     command::register_command,
     function::Function,
 };

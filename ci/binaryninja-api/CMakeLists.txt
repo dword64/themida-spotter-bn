@@ -2,17 +2,16 @@ cmake_minimum_required(VERSION 3.20)
 
 project(binaryninja-core)
 
-set(_triton_bn_binaryninja_git_tag "stable/5.2.8722")
+set(_triton_bn_binaryninja_git_tag "stable/6.0.10601")
 
 include(FetchContent)
 FetchContent_Declare(binaryninjaapi
     GIT_REPOSITORY https://github.com/Vector35/binaryninja-api.git
     GIT_TAG        ${_triton_bn_binaryninja_git_tag}
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  headers-only
 )
-FetchContent_GetProperties(binaryninjaapi)
-if(NOT binaryninjaapi_POPULATED)
-    FetchContent_Populate(binaryninjaapi)  # For binaryninjaapi_SOURCE_DIR
-endif()
+FetchContent_MakeAvailable(binaryninjaapi)  # For binaryninjaapi_SOURCE_DIR
 
 add_library(binaryninjacore SHARED
     binaryninjacore.cc
