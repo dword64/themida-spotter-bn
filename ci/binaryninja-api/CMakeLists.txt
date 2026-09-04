@@ -9,6 +9,8 @@ FetchContent_Declare(binaryninjaapi
     GIT_REPOSITORY https://github.com/Vector35/binaryninja-api.git
     GIT_TAG        ${_triton_bn_binaryninja_git_tag}
     GIT_SHALLOW    TRUE
+    GIT_SUBMODULES ""
+    GIT_SUBMODULES_RECURSE OFF
     SOURCE_SUBDIR  headers-only
 )
 FetchContent_MakeAvailable(binaryninjaapi)  # For binaryninjaapi_SOURCE_DIR
